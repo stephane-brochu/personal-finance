@@ -10,6 +10,8 @@ import type {
   NetWorthEntry,
   NetWorthEntryType,
   PortfolioResponse,
+  Statement,
+  StatementIngestResult,
   Trade,
   TradeSide,
 } from "@/lib/types";
@@ -32,6 +34,15 @@ type NetWorthFormState = {
   amount: string;
 };
 
+type StatementImportFormState = {
+  institution: string;
+  accountMask: string;
+  accountType: "brokerage" | "bank";
+  currency: string;
+  format: "pdf" | "csv";
+  file: File | null;
+};
+
 const DEFAULT_TRADE_FORM: TradeFormState = {
   symbol: "",
   assetType: "equity",
@@ -48,6 +59,15 @@ const DEFAULT_NET_WORTH_FORM: NetWorthFormState = {
   category: ASSET_CATEGORIES[0],
   label: "",
   amount: "",
+};
+
+const DEFAULT_STATEMENT_IMPORT_FORM: StatementImportFormState = {
+  institution: "samplebank",
+  accountMask: "****1234",
+  accountType: "brokerage",
+  currency: "CAD",
+  format: "csv",
+  file: null,
 };
 
 function toTradeFormState(trade: Trade): TradeFormState {
@@ -85,6 +105,20 @@ async function fetchPortfolio(refresh = true) {
   return (await response.json()) as PortfolioResponse;
 }
 
+async function fetchStatements() {
+  const response = await fetch("/api/statements", {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const payload = await response.json();
+    throw new Error(payload.error ?? "Failed to fetch statements");
+  }
+
+  const payload = (await response.json()) as { statements?: Statement[] };
+  return Array.isArray(payload.statements) ? payload.statements : [];
+}
+
 function categoriesForEntryType(entryType: NetWorthEntryType): NetWorthCategory[] {
   if (entryType === "asset") {
     return [...ASSET_CATEGORIES];
@@ -110,6 +144,15 @@ export function PortfolioClient() {
   const [editingNetWorthEntry, setEditingNetWorthEntry] = useState<NetWorthEntry | null>(null);
   const [netWorthFormState, setNetWorthFormState] =
     useState<NetWorthFormState>(DEFAULT_NET_WORTH_FORM);
+  const [statements, setStatements] = useState<Statement[]>([]);
+  const [statementLoadingError, setStatementLoadingError] = useState<string | null>(null);
+  const [statementImportForm, setStatementImportForm] = useState<StatementImportFormState>(
+    DEFAULT_STATEMENT_IMPORT_FORM,
+  );
+  const [statementImportError, setStatementImportError] = useState<string | null>(null);
+  const [submittingStatementImport, setSubmittingStatementImport] = useState(false);
+  const [lastImportResult, setLastImportResult] = useState<StatementIngestResult | null>(null);
+  const [reprocessingStatementId, setReprocessingStatementId] = useState<number | null>(null);
 
   async function loadData(refresh = true) {
     try {
@@ -123,6 +166,18 @@ export function PortfolioClient() {
     }
   }
 
+  async function loadStatements() {
+    try {
+      const statementHistory = await fetchStatements();
+      setStatements(statementHistory);
+      setStatementLoadingError(null);
+    } catch (error) {
+      setStatementLoadingError(
+        error instanceof Error ? error.message : "Failed to load statement history",
+      );
+    }
+  }
+
   useEffect(() => {
     void loadData(true);
 
@@ -132,6 +187,75 @@ export function PortfolioClient() {
 
     return () => clearInterval(interval);
   }, []);
+
+  async function handleStatementImport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setStatementImportError(null);
+    setSubmittingStatementImport(true);
+
+    if (!statementImportForm.file) {
+      setStatementImportError("Statement file is required");
+      setSubmittingStatementImport(false);
+      return;
+    }
+
+    try {
+      const formData = new FormData();
+      formData.set("institution", statementImportForm.institution.trim().toLowerCase());
+      formData.set("accountMask", statementImportForm.accountMask.trim());
+      formData.set("accountType", statementImportForm.accountType);
+      formData.set("currency", statementImportForm.currency.trim().toUpperCase());
+      formData.set("format", statementImportForm.format);
+      formData.set("file", statementImportForm.file);
+
+      const response = await fetch("/api/statements/import", {
+        method: "POST",
+        body: formData,
+      });
+
+      const payload = (await response.json()) as StatementIngestResult & { error?: string };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to import statement");
+      }
+
+      setLastImportResult(payload);
+      setStatementImportForm((prev) => ({ ...prev, file: null }));
+      await loadData(true);
+      await loadStatements();
+    } catch (error) {
+      setStatementImportError(
+        error instanceof Error ? error.message : "Failed to import statement",
+      );
+    } finally {
+      setSubmittingStatementImport(false);
+    }
+  }
+
+  async function handleReprocessStatement(statementId: number) {
+    setReprocessingStatementId(statementId);
+    setStatementImportError(null);
+
+    try {
+      const response = await fetch(`/api/statements/${statementId}/reprocess`, {
+        method: "POST",
+      });
+      const payload = (await response.json()) as StatementIngestResult & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to reprocess statement");
+      }
+
+      setLastImportResult(payload);
+      await loadData(true);
+      await loadStatements();
+    } catch (error) {
+      setStatementImportError(
+        error instanceof Error ? error.message : "Failed to reprocess statement",
+      );
+    } finally {
+      setReprocessingStatementId(null);
+    }
+  }
 
   const quoteTimestamp = useMemo(() => {
     if (!portfolio) {
@@ -348,6 +472,170 @@ export function PortfolioClient() {
           ))}
         </div>
       ) : null}
+      {statementLoadingError ? <p className="error-banner">{statementLoadingError}</p> : null}
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Import Statements</h2>
+          <p>Supported in v1: `samplebank` CSV and `samplebroker` text-based PDF</p>
+        </div>
+        <form className="statement-import-form" onSubmit={handleStatementImport}>
+          <label>
+            Institution
+            <input
+              required
+              value={statementImportForm.institution}
+              onChange={(event) =>
+                setStatementImportForm((prev) => ({ ...prev, institution: event.target.value }))
+              }
+            />
+          </label>
+          <label>
+            Account
+            <input
+              required
+              value={statementImportForm.accountMask}
+              onChange={(event) =>
+                setStatementImportForm((prev) => ({ ...prev, accountMask: event.target.value }))
+              }
+            />
+          </label>
+          <label>
+            Account Type
+            <select
+              value={statementImportForm.accountType}
+              onChange={(event) =>
+                setStatementImportForm((prev) => ({
+                  ...prev,
+                  accountType: event.target.value as "brokerage" | "bank",
+                }))
+              }
+            >
+              <option value="brokerage">Brokerage</option>
+              <option value="bank">Bank</option>
+            </select>
+          </label>
+          <label>
+            Currency
+            <input
+              value={statementImportForm.currency}
+              maxLength={3}
+              onChange={(event) =>
+                setStatementImportForm((prev) => ({
+                  ...prev,
+                  currency: event.target.value.toUpperCase(),
+                }))
+              }
+            />
+          </label>
+          <label>
+            Format
+            <select
+              value={statementImportForm.format}
+              onChange={(event) =>
+                setStatementImportForm((prev) => ({
+                  ...prev,
+                  format: event.target.value as "pdf" | "csv",
+                }))
+              }
+            >
+              <option value="csv">CSV</option>
+              <option value="pdf">PDF</option>
+            </select>
+          </label>
+          <label>
+            Statement File
+            <input
+              required
+              type="file"
+              accept=".csv,.pdf"
+              onChange={(event) =>
+                setStatementImportForm((prev) => ({
+                  ...prev,
+                  file: event.target.files?.[0] ?? null,
+                }))
+              }
+            />
+          </label>
+          <div className="statement-import-actions">
+            <button className="button" type="submit" disabled={submittingStatementImport}>
+              {submittingStatementImport ? "Importing..." : "Import Statement"}
+            </button>
+          </div>
+        </form>
+
+        {statementImportError ? <p className="form-error">{statementImportError}</p> : null}
+        {lastImportResult ? (
+          <div className="import-result">
+            <p>
+              Import status: <strong>{lastImportResult.statement.status}</strong> (
+              {lastImportResult.statement.fileName})
+            </p>
+            <p>
+              Parsed {lastImportResult.counts.parsed} | Inserted {lastImportResult.counts.inserted} |
+              Deduped {lastImportResult.counts.deduped} | Rejected {lastImportResult.counts.rejected}
+            </p>
+            {lastImportResult.warnings.length ? (
+              <p>Warnings: {lastImportResult.warnings.join(" | ")}</p>
+            ) : null}
+            {lastImportResult.errors.length ? (
+              <p className="loss">Errors: {lastImportResult.errors.join(" | ")}</p>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Statement History</h2>
+          <p>Most recent imports</p>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Imported At</th>
+              <th>Institution</th>
+              <th>Account</th>
+              <th>File</th>
+              <th>Status</th>
+              <th>Counts</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {statements.length ? (
+              statements.map((statement) => (
+                <tr key={statement.id}>
+                  <td>{new Date(statement.createdAt).toLocaleString("en-CA")}</td>
+                  <td>{statement.institution}</td>
+                  <td>{statement.accountMask}</td>
+                  <td>{statement.fileName}</td>
+                  <td>{statement.status}</td>
+                  <td>
+                    {statement.parsedCount}/{statement.insertedCount}/{statement.dedupedCount}/
+                    {statement.rejectedCount}
+                  </td>
+                  <td>
+                    <button
+                      className="link-button"
+                      onClick={() => void handleReprocessStatement(statement.id)}
+                      disabled={reprocessingStatementId === statement.id}
+                    >
+                      {reprocessingStatementId === statement.id ? "Reprocessing..." : "Reprocess"}
+                    </button>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={7} className="empty-row">
+                  No statements imported yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
 
       <section className="summary-grid summary-grid-4">
         <article className="summary-card">
