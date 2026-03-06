@@ -1,101 +1,30 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { ASSET_CATEGORIES, CATEGORY_LABELS, DEBT_CATEGORIES } from "@/lib/net-worth";
 import { formatCurrency, formatQuantity } from "@/lib/portfolio";
 import type {
-  AssetType,
-  DebtCategory,
-  NetWorthCategory,
-  NetWorthEntry,
-  NetWorthEntryType,
+  Portfolio,
   PortfolioResponse,
-  Statement,
-  StatementIngestResult,
-  Trade,
-  TradeSide,
+  QuestradeSyncResult,
+  YahooImportResult,
 } from "@/lib/types";
 
-type TradeFormState = {
-  symbol: string;
-  assetType: AssetType;
-  side: TradeSide;
-  quantity: string;
-  price: string;
-  fee: string;
-  tradedAt: string;
-  notes: string;
-};
+async function fetchPortfolios() {
+  const response = await fetch("/api/portfolios", { cache: "no-store" });
+  if (!response.ok) {
+    const payload = await response.json();
+    throw new Error(payload.error ?? "Failed to fetch portfolios");
+  }
 
-type NetWorthFormState = {
-  entryType: NetWorthEntryType;
-  category: NetWorthCategory;
-  label: string;
-  amount: string;
-};
-
-type StatementImportFormState = {
-  institution: string;
-  accountMask: string;
-  accountType: "brokerage" | "bank";
-  currency: string;
-  format: "pdf" | "csv";
-  file: File | null;
-};
-
-const DEFAULT_TRADE_FORM: TradeFormState = {
-  symbol: "",
-  assetType: "equity",
-  side: "buy",
-  quantity: "",
-  price: "",
-  fee: "0",
-  tradedAt: new Date().toISOString().slice(0, 16),
-  notes: "",
-};
-
-const DEFAULT_NET_WORTH_FORM: NetWorthFormState = {
-  entryType: "asset",
-  category: ASSET_CATEGORIES[0],
-  label: "",
-  amount: "",
-};
-
-const DEFAULT_STATEMENT_IMPORT_FORM: StatementImportFormState = {
-  institution: "samplebank",
-  accountMask: "****1234",
-  accountType: "brokerage",
-  currency: "CAD",
-  format: "csv",
-  file: null,
-};
-
-function toTradeFormState(trade: Trade): TradeFormState {
-  return {
-    symbol: trade.symbol,
-    assetType: trade.assetType,
-    side: trade.side,
-    quantity: String(trade.quantity),
-    price: String(trade.price),
-    fee: String(trade.fee),
-    tradedAt: trade.tradedAt.slice(0, 16),
-    notes: trade.notes ?? "",
-  };
+  const payload = (await response.json()) as { portfolios: Portfolio[] };
+  return payload.portfolios;
 }
 
-function toNetWorthFormState(entry: NetWorthEntry): NetWorthFormState {
-  return {
-    entryType: entry.entryType,
-    category: entry.category,
-    label: entry.label,
-    amount: String(entry.amount),
-  };
-}
-
-async function fetchPortfolio(refresh = true) {
-  const response = await fetch(`/api/portfolio?refresh=${refresh ? "1" : "0"}`, {
-    cache: "no-store",
-  });
+async function fetchPortfolioSnapshot(portfolioId: number, refresh = true) {
+  const response = await fetch(
+    `/api/portfolio?portfolioId=${portfolioId}&refresh=${refresh ? "1" : "0"}`,
+    { cache: "no-store" },
+  );
 
   if (!response.ok) {
     const payload = await response.json();
@@ -105,157 +34,72 @@ async function fetchPortfolio(refresh = true) {
   return (await response.json()) as PortfolioResponse;
 }
 
-async function fetchStatements() {
-  const response = await fetch("/api/statements", {
-    cache: "no-store",
-  });
-
-  if (!response.ok) {
-    const payload = await response.json();
-    throw new Error(payload.error ?? "Failed to fetch statements");
-  }
-
-  const payload = (await response.json()) as { statements?: Statement[] };
-  return Array.isArray(payload.statements) ? payload.statements : [];
-}
-
-function categoriesForEntryType(entryType: NetWorthEntryType): NetWorthCategory[] {
-  if (entryType === "asset") {
-    return [...ASSET_CATEGORIES];
-  }
-
-  return [...DEBT_CATEGORIES] as NetWorthCategory[];
-}
-
 export function PortfolioClient() {
+  const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
+  const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
+  const [newPortfolioName, setNewPortfolioName] = useState("");
+
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadingError, setLoadingError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const [submittingTrade, setSubmittingTrade] = useState(false);
-  const [tradeFormError, setTradeFormError] = useState<string | null>(null);
-  const [showTradeModal, setShowTradeModal] = useState(false);
-  const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
-  const [tradeFormState, setTradeFormState] = useState<TradeFormState>(DEFAULT_TRADE_FORM);
+  const [creatingPortfolio, setCreatingPortfolio] = useState(false);
+  const [importingYahoo, setImportingYahoo] = useState(false);
+  const [syncingQuestrade, setSyncingQuestrade] = useState(false);
+  const [importResult, setImportResult] = useState<YahooImportResult | null>(null);
+  const [questradeSyncResult, setQuestradeSyncResult] = useState<QuestradeSyncResult | null>(null);
 
-  const [submittingNetWorth, setSubmittingNetWorth] = useState(false);
-  const [netWorthFormError, setNetWorthFormError] = useState<string | null>(null);
-  const [showNetWorthModal, setShowNetWorthModal] = useState(false);
-  const [editingNetWorthEntry, setEditingNetWorthEntry] = useState<NetWorthEntry | null>(null);
-  const [netWorthFormState, setNetWorthFormState] =
-    useState<NetWorthFormState>(DEFAULT_NET_WORTH_FORM);
-  const [statements, setStatements] = useState<Statement[]>([]);
-  const [statementLoadingError, setStatementLoadingError] = useState<string | null>(null);
-  const [statementImportForm, setStatementImportForm] = useState<StatementImportFormState>(
-    DEFAULT_STATEMENT_IMPORT_FORM,
-  );
-  const [statementImportError, setStatementImportError] = useState<string | null>(null);
-  const [submittingStatementImport, setSubmittingStatementImport] = useState(false);
-  const [lastImportResult, setLastImportResult] = useState<StatementIngestResult | null>(null);
-  const [reprocessingStatementId, setReprocessingStatementId] = useState<number | null>(null);
+  async function loadPortfolios() {
+    const list = await fetchPortfolios();
+    setPortfolios(list);
 
-  async function loadData(refresh = true) {
+    if (list.length === 0) {
+      setSelectedPortfolioId(null);
+      setPortfolio(null);
+      return;
+    }
+
+    setSelectedPortfolioId((current) => current ?? list[0].id);
+  }
+
+  async function loadSnapshot(portfolioId: number, refresh = true) {
     try {
-      const data = await fetchPortfolio(refresh);
-      setPortfolio(data);
-      setLoadingError(null);
-    } catch (error) {
-      setLoadingError(error instanceof Error ? error.message : "Failed to load data");
+      const snapshot = await fetchPortfolioSnapshot(portfolioId, refresh);
+      setPortfolio(snapshot);
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load portfolio");
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadStatements() {
-    try {
-      const statementHistory = await fetchStatements();
-      setStatements(statementHistory);
-      setStatementLoadingError(null);
-    } catch (error) {
-      setStatementLoadingError(
-        error instanceof Error ? error.message : "Failed to load statement history",
-      );
-    }
-  }
-
   useEffect(() => {
-    void loadData(true);
-
-    const interval = setInterval(() => {
-      void loadData(true);
-    }, 60_000);
-
-    return () => clearInterval(interval);
+    void (async () => {
+      try {
+        await loadPortfolios();
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load portfolios");
+        setLoading(false);
+      }
+    })();
   }, []);
 
-  async function handleStatementImport(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setStatementImportError(null);
-    setSubmittingStatementImport(true);
-
-    if (!statementImportForm.file) {
-      setStatementImportError("Statement file is required");
-      setSubmittingStatementImport(false);
+  useEffect(() => {
+    if (!selectedPortfolioId) {
+      setLoading(false);
       return;
     }
 
-    try {
-      const formData = new FormData();
-      formData.set("institution", statementImportForm.institution.trim().toLowerCase());
-      formData.set("accountMask", statementImportForm.accountMask.trim());
-      formData.set("accountType", statementImportForm.accountType);
-      formData.set("currency", statementImportForm.currency.trim().toUpperCase());
-      formData.set("format", statementImportForm.format);
-      formData.set("file", statementImportForm.file);
+    setLoading(true);
+    void loadSnapshot(selectedPortfolioId, true);
 
-      const response = await fetch("/api/statements/import", {
-        method: "POST",
-        body: formData,
-      });
+    const interval = setInterval(() => {
+      void loadSnapshot(selectedPortfolioId, true);
+    }, 60_000);
 
-      const payload = (await response.json()) as StatementIngestResult & { error?: string };
-
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to import statement");
-      }
-
-      setLastImportResult(payload);
-      setStatementImportForm((prev) => ({ ...prev, file: null }));
-      await loadData(true);
-      await loadStatements();
-    } catch (error) {
-      setStatementImportError(
-        error instanceof Error ? error.message : "Failed to import statement",
-      );
-    } finally {
-      setSubmittingStatementImport(false);
-    }
-  }
-
-  async function handleReprocessStatement(statementId: number) {
-    setReprocessingStatementId(statementId);
-    setStatementImportError(null);
-
-    try {
-      const response = await fetch(`/api/statements/${statementId}/reprocess`, {
-        method: "POST",
-      });
-      const payload = (await response.json()) as StatementIngestResult & { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to reprocess statement");
-      }
-
-      setLastImportResult(payload);
-      await loadData(true);
-      await loadStatements();
-    } catch (error) {
-      setStatementImportError(
-        error instanceof Error ? error.message : "Failed to reprocess statement",
-      );
-    } finally {
-      setReprocessingStatementId(null);
-    }
-  }
+    return () => clearInterval(interval);
+  }, [selectedPortfolioId]);
 
   const quoteTimestamp = useMemo(() => {
     if (!portfolio) {
@@ -266,815 +110,329 @@ export function PortfolioClient() {
       .map((position) => position.quoteTimestamp)
       .filter(Boolean) as string[];
 
-    if (timestamps.length === 0) {
-      return null;
-    }
-
-    return timestamps.sort().at(-1) ?? null;
+    return timestamps.length ? timestamps.sort().at(-1) ?? null : null;
   }, [portfolio]);
 
-  function openAddTradeModal() {
-    setEditingTrade(null);
-    setTradeFormState({ ...DEFAULT_TRADE_FORM, tradedAt: new Date().toISOString().slice(0, 16) });
-    setTradeFormError(null);
-    setShowTradeModal(true);
-  }
-
-  function openEditTradeModal(trade: Trade) {
-    setEditingTrade(trade);
-    setTradeFormState(toTradeFormState(trade));
-    setTradeFormError(null);
-    setShowTradeModal(true);
-  }
-
-  function closeTradeModal() {
-    setShowTradeModal(false);
-    setEditingTrade(null);
-    setTradeFormState(DEFAULT_TRADE_FORM);
-    setTradeFormError(null);
-  }
-
-  async function handleTradeSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleCreatePortfolio(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmittingTrade(true);
-    setTradeFormError(null);
-
-    const payload = {
-      symbol: tradeFormState.symbol.trim().toUpperCase(),
-      assetType: tradeFormState.assetType,
-      side: tradeFormState.side,
-      quantity: Number(tradeFormState.quantity),
-      price: Number(tradeFormState.price),
-      fee: Number(tradeFormState.fee || "0"),
-      tradedAt: new Date(tradeFormState.tradedAt).toISOString(),
-      notes: tradeFormState.notes.trim() ? tradeFormState.notes.trim() : null,
-    };
-
-    if (!payload.symbol) {
-      setSubmittingTrade(false);
-      setTradeFormError("Symbol is required");
+    if (!newPortfolioName.trim()) {
       return;
     }
 
-    const url = editingTrade ? `/api/trades/${editingTrade.id}` : "/api/trades";
-    const method = editingTrade ? "PATCH" : "POST";
+    setCreatingPortfolio(true);
+    setError(null);
 
     try {
-      const response = await fetch(url, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+      const response = await fetch("/api/portfolios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newPortfolioName.trim() }),
       });
 
+      const payload = (await response.json()) as Portfolio & { error?: string };
       if (!response.ok) {
-        const errorPayload = await response.json();
-        throw new Error(errorPayload.error ?? "Unable to save trade");
+        throw new Error(payload.error ?? "Failed to create portfolio");
       }
 
-      closeTradeModal();
-      await loadData(true);
-    } catch (error) {
-      setTradeFormError(error instanceof Error ? error.message : "Failed to save trade");
+      setNewPortfolioName("");
+      await loadPortfolios();
+      setSelectedPortfolioId(payload.id);
+      await loadSnapshot(payload.id, false);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Failed to create portfolio");
     } finally {
-      setSubmittingTrade(false);
+      setCreatingPortfolio(false);
     }
   }
 
-  async function handleDeleteTrade(trade: Trade) {
-    const accepted = window.confirm(`Delete ${trade.side} trade for ${trade.symbol}?`);
-    if (!accepted) {
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/trades/${trade.id}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.error ?? "Delete failed");
-      }
-
-      await loadData(false);
-      await loadData(true);
-    } catch (error) {
-      setLoadingError(error instanceof Error ? error.message : "Delete failed");
-    }
-  }
-
-  function openAddNetWorthModal(entryType: NetWorthEntryType, category: NetWorthCategory) {
-    setEditingNetWorthEntry(null);
-    setNetWorthFormState({
-      entryType,
-      category,
-      label: "",
-      amount: "",
-    });
-    setNetWorthFormError(null);
-    setShowNetWorthModal(true);
-  }
-
-  function openEditNetWorthModal(entry: NetWorthEntry) {
-    setEditingNetWorthEntry(entry);
-    setNetWorthFormState(toNetWorthFormState(entry));
-    setNetWorthFormError(null);
-    setShowNetWorthModal(true);
-  }
-
-  function closeNetWorthModal() {
-    setShowNetWorthModal(false);
-    setEditingNetWorthEntry(null);
-    setNetWorthFormState(DEFAULT_NET_WORTH_FORM);
-    setNetWorthFormError(null);
-  }
-
-  async function handleNetWorthSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleYahooImport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmittingNetWorth(true);
-    setNetWorthFormError(null);
-
-    const payload = {
-      entryType: netWorthFormState.entryType,
-      category: netWorthFormState.category,
-      label: netWorthFormState.label.trim(),
-      amount: Number(netWorthFormState.amount),
-    };
-
-    if (!payload.label) {
-      setSubmittingNetWorth(false);
-      setNetWorthFormError("Label is required");
+    if (!selectedPortfolioId) {
+      setError("Select or create a portfolio first");
       return;
     }
 
-    const url = editingNetWorthEntry
-      ? `/api/net-worth/entries/${editingNetWorthEntry.id}`
-      : "/api/net-worth/entries";
+    const form = event.currentTarget;
+    const fileInput = form.elements.namedItem("yahooCsv") as HTMLInputElement | null;
+    const file = fileInput?.files?.[0] ?? null;
 
-    const method = editingNetWorthEntry ? "PATCH" : "POST";
-    const body = editingNetWorthEntry
-      ? JSON.stringify({ label: payload.label, amount: payload.amount })
-      : JSON.stringify(payload);
+    if (!file) {
+      setError("Please select a Yahoo CSV file");
+      return;
+    }
+
+    setImportingYahoo(true);
+    setError(null);
 
     try {
-      const response = await fetch(url, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body,
+      const formData = new FormData();
+      formData.set("portfolioId", String(selectedPortfolioId));
+      formData.set("file", file);
+
+      const response = await fetch("/api/portfolio/import-yahoo", {
+        method: "POST",
+        body: formData,
       });
 
+      const payload = (await response.json()) as YahooImportResult & { error?: string };
       if (!response.ok) {
-        const errorPayload = await response.json();
-        throw new Error(errorPayload.error ?? "Unable to save net worth entry");
+        throw new Error(payload.error ?? "Import failed");
       }
 
-      closeNetWorthModal();
-      await loadData(false);
-    } catch (error) {
-      setNetWorthFormError(
-        error instanceof Error ? error.message : "Failed to save net worth entry",
-      );
+      setImportResult(payload);
+      form.reset();
+      await loadSnapshot(selectedPortfolioId, true);
+    } catch (importError) {
+      setError(importError instanceof Error ? importError.message : "Import failed");
     } finally {
-      setSubmittingNetWorth(false);
+      setImportingYahoo(false);
     }
   }
 
-  if (loading) {
-    return <p className="status">Loading portfolio...</p>;
+  async function handleQuestradeSync() {
+    setSyncingQuestrade(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/brokers/questrade/sync", {
+        method: "POST",
+      });
+      const payload = (await response.json()) as QuestradeSyncResult & { error?: string };
+
+      if (!response.ok && !payload.counts) {
+        throw new Error(payload.error ?? "Questrade sync failed");
+      }
+
+      setQuestradeSyncResult(payload);
+      await loadPortfolios();
+      if (selectedPortfolioId) {
+        await loadSnapshot(selectedPortfolioId, true);
+      }
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "Questrade sync failed");
+    } finally {
+      setSyncingQuestrade(false);
+    }
   }
 
   return (
     <main className="page-shell">
       <header className="page-header">
         <div>
-          <h1>Personal Finance Dashboard</h1>
-          <p>Net worth + portfolio tracker (CAD)</p>
+          <h1>Portfolio Dashboard</h1>
+          <p>Portfolio upload + holdings + trade history</p>
         </div>
         <div className="header-actions">
-          <button className="button secondary" onClick={() => void loadData(true)}>
+          <button
+            className="button secondary"
+            disabled={!selectedPortfolioId}
+            onClick={() => selectedPortfolioId && void loadSnapshot(selectedPortfolioId, true)}
+          >
             Refresh Now
           </button>
-          <button className="button" onClick={openAddTradeModal}>
-            Add Trade
+          <button
+            className="button"
+            disabled={syncingQuestrade}
+            onClick={() => void handleQuestradeSync()}
+          >
+            {syncingQuestrade ? "Syncing Questrade..." : "Sync Questrade Accounts"}
           </button>
         </div>
       </header>
 
-      {loadingError ? <p className="error-banner">{loadingError}</p> : null}
-      {portfolio?.quoteWarnings.length ? (
-        <div className="warning-banner">
-          {portfolio.quoteWarnings.map((warning) => (
-            <p key={warning}>{warning}</p>
-          ))}
-        </div>
-      ) : null}
-      {statementLoadingError ? <p className="error-banner">{statementLoadingError}</p> : null}
+      {error ? <p className="error-banner">{error}</p> : null}
 
       <section className="panel">
         <div className="panel-header">
-          <h2>Import Statements</h2>
-          <p>Supported in v1: `samplebank` CSV and `samplebroker` text-based PDF</p>
+          <h2>Select Portfolio</h2>
         </div>
-        <form className="statement-import-form" onSubmit={handleStatementImport}>
-          <label>
-            Institution
+        <div className="yahoo-import-form">
+          <select
+            value={selectedPortfolioId ?? ""}
+            onChange={(event) => setSelectedPortfolioId(Number(event.target.value))}
+          >
+            {portfolios.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+          <form className="yahoo-import-form" onSubmit={handleCreatePortfolio}>
             <input
-              required
-              value={statementImportForm.institution}
-              onChange={(event) =>
-                setStatementImportForm((prev) => ({ ...prev, institution: event.target.value }))
-              }
+              placeholder="New portfolio name"
+              value={newPortfolioName}
+              onChange={(event) => setNewPortfolioName(event.target.value)}
             />
-          </label>
-          <label>
-            Account
-            <input
-              required
-              value={statementImportForm.accountMask}
-              onChange={(event) =>
-                setStatementImportForm((prev) => ({ ...prev, accountMask: event.target.value }))
-              }
-            />
-          </label>
-          <label>
-            Account Type
-            <select
-              value={statementImportForm.accountType}
-              onChange={(event) =>
-                setStatementImportForm((prev) => ({
-                  ...prev,
-                  accountType: event.target.value as "brokerage" | "bank",
-                }))
-              }
-            >
-              <option value="brokerage">Brokerage</option>
-              <option value="bank">Bank</option>
-            </select>
-          </label>
-          <label>
-            Currency
-            <input
-              value={statementImportForm.currency}
-              maxLength={3}
-              onChange={(event) =>
-                setStatementImportForm((prev) => ({
-                  ...prev,
-                  currency: event.target.value.toUpperCase(),
-                }))
-              }
-            />
-          </label>
-          <label>
-            Format
-            <select
-              value={statementImportForm.format}
-              onChange={(event) =>
-                setStatementImportForm((prev) => ({
-                  ...prev,
-                  format: event.target.value as "pdf" | "csv",
-                }))
-              }
-            >
-              <option value="csv">CSV</option>
-              <option value="pdf">PDF</option>
-            </select>
-          </label>
-          <label>
-            Statement File
-            <input
-              required
-              type="file"
-              accept=".csv,.pdf"
-              onChange={(event) =>
-                setStatementImportForm((prev) => ({
-                  ...prev,
-                  file: event.target.files?.[0] ?? null,
-                }))
-              }
-            />
-          </label>
-          <div className="statement-import-actions">
-            <button className="button" type="submit" disabled={submittingStatementImport}>
-              {submittingStatementImport ? "Importing..." : "Import Statement"}
+            <button className="button" type="submit" disabled={creatingPortfolio}>
+              {creatingPortfolio ? "Creating..." : "Create"}
             </button>
-          </div>
-        </form>
+          </form>
+        </div>
+      </section>
 
-        {statementImportError ? <p className="form-error">{statementImportError}</p> : null}
-        {lastImportResult ? (
-          <div className="import-result">
-            <p>
-              Import status: <strong>{lastImportResult.statement.status}</strong> (
-              {lastImportResult.statement.fileName})
-            </p>
-            <p>
-              Parsed {lastImportResult.counts.parsed} | Inserted {lastImportResult.counts.inserted} |
-              Deduped {lastImportResult.counts.deduped} | Rejected {lastImportResult.counts.rejected}
-            </p>
-            {lastImportResult.warnings.length ? (
-              <p>Warnings: {lastImportResult.warnings.join(" | ")}</p>
-            ) : null}
-            {lastImportResult.errors.length ? (
-              <p className="loss">Errors: {lastImportResult.errors.join(" | ")}</p>
-            ) : null}
-          </div>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Upload Yahoo CSV</h2>
+        </div>
+        <form className="yahoo-import-form" onSubmit={handleYahooImport}>
+          <label>
+            Upload Yahoo CSV
+            <input name="yahooCsv" type="file" accept=".csv,text/csv" required />
+          </label>
+          <button className="button" type="submit" disabled={importingYahoo || !selectedPortfolioId}>
+            {importingYahoo ? "Importing..." : "Import"}
+          </button>
+        </form>
+        {importResult ? (
+          <p className="empty-copy">
+            Parsed {importResult.counts.parsed}, inserted {importResult.counts.inserted}, deduped {" "}
+            {importResult.counts.deduped}, rejected {importResult.counts.rejected}
+          </p>
         ) : null}
       </section>
 
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Statement History</h2>
-          <p>Most recent imports</p>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Imported At</th>
-              <th>Institution</th>
-              <th>Account</th>
-              <th>File</th>
-              <th>Status</th>
-              <th>Counts</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {statements.length ? (
-              statements.map((statement) => (
-                <tr key={statement.id}>
-                  <td>{new Date(statement.createdAt).toLocaleString("en-CA")}</td>
-                  <td>{statement.institution}</td>
-                  <td>{statement.accountMask}</td>
-                  <td>{statement.fileName}</td>
-                  <td>{statement.status}</td>
-                  <td>
-                    {statement.parsedCount}/{statement.insertedCount}/{statement.dedupedCount}/
-                    {statement.rejectedCount}
-                  </td>
-                  <td>
-                    <button
-                      className="link-button"
-                      onClick={() => void handleReprocessStatement(statement.id)}
-                      disabled={reprocessingStatementId === statement.id}
-                    >
-                      {reprocessingStatementId === statement.id ? "Reprocessing..." : "Reprocess"}
-                    </button>
-                  </td>
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan={7} className="empty-row">
-                  No statements imported yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="summary-grid summary-grid-4">
-        <article className="summary-card">
-          <h2>Total Assets</h2>
-          <p>{formatCurrency(portfolio?.netWorth.summary.totalAssets ?? 0)}</p>
-        </article>
-        <article className="summary-card">
-          <h2>Total Debts</h2>
-          <p>{formatCurrency(portfolio?.netWorth.summary.totalDebts ?? 0)}</p>
-        </article>
-        <article className="summary-card">
-          <h2>Net Worth</h2>
-          <p>{formatCurrency(portfolio?.netWorth.summary.netWorth ?? 0)}</p>
-        </article>
-        <article className="summary-card">
-          <h2>Portfolio Contribution</h2>
-          <p>{formatCurrency(portfolio?.netWorth.summary.totalPortfolio ?? 0)}</p>
-        </article>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Assets</h2>
-          <p>Manual assets + linked portfolio value</p>
-        </div>
-        <div className="category-grid">
-          {portfolio?.netWorth.assetsByCategory.map((group) => (
-            <article key={group.category} className="category-card">
-              <div className="category-header">
-                <h3>{CATEGORY_LABELS[group.category]}</h3>
-                <button
-                  className="link-button"
-                  onClick={() => openAddNetWorthModal("asset", group.category)}
-                >
-                  Add Item
-                </button>
-              </div>
-              <p className="category-total">{formatCurrency(group.total)}</p>
-              {group.entries.length ? (
-                <ul className="entry-list">
-                  {group.entries.map((entry) => (
-                    <li key={entry.id}>
-                      <span>{entry.label}</span>
-                      <div className="entry-actions">
-                        <span>{formatCurrency(entry.amount)}</span>
-                        <button className="link-button" onClick={() => openEditNetWorthModal(entry)}>
-                          Edit
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="empty-copy">No entries</p>
-              )}
-            </article>
-          ))}
-
-          <article className="category-card portfolio-readonly">
-            <div className="category-header">
-              <h3>Portfolio (Live)</h3>
-            </div>
-            <p className="category-total">
-              {formatCurrency(portfolio?.netWorth.summary.totalPortfolio ?? 0)}
-            </p>
-            <p className="empty-copy">Read-only from your holdings valuation.</p>
-          </article>
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Debts</h2>
-          <p>Mortgage and car lease balances</p>
-        </div>
-        <div className="category-grid two-column">
-          {portfolio?.netWorth.debtsByCategory.map((group) => (
-            <article key={group.category} className="category-card">
-              <div className="category-header">
-                <h3>{CATEGORY_LABELS[group.category as DebtCategory]}</h3>
-                <button
-                  className="link-button"
-                  onClick={() => openAddNetWorthModal("debt", group.category)}
-                >
-                  Add Item
-                </button>
-              </div>
-              <p className="category-total">{formatCurrency(group.total)}</p>
-              {group.entries.length ? (
-                <ul className="entry-list">
-                  {group.entries.map((entry) => (
-                    <li key={entry.id}>
-                      <span>{entry.label}</span>
-                      <div className="entry-actions">
-                        <span>{formatCurrency(entry.amount)}</span>
-                        <button className="link-button" onClick={() => openEditNetWorthModal(entry)}>
-                          Edit
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="empty-copy">No entries</p>
-              )}
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="summary-grid">
-        <article className="summary-card">
-          <h2>Portfolio Market Value</h2>
-          <p>{formatCurrency(portfolio?.summary.totalMarketValue ?? 0)}</p>
-        </article>
-        <article className="summary-card">
-          <h2>Portfolio Unrealized P&L</h2>
-          <p>{formatCurrency(portfolio?.summary.totalUnrealizedPnl ?? 0)}</p>
-        </article>
-        <article className="summary-card">
-          <h2>Portfolio Realized P&L</h2>
-          <p>{formatCurrency(portfolio?.summary.totalRealizedPnl ?? 0)}</p>
-        </article>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Holdings</h2>
-          <p>
-            Last quote update: {quoteTimestamp ? new Date(quoteTimestamp).toLocaleString("en-CA") : "n/a"}
+      {questradeSyncResult ? (
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Questrade Sync Result</h2>
+            <p>{new Date(questradeSyncResult.syncedAt).toLocaleString("en-CA")}</p>
+          </div>
+          <p className="empty-copy">
+            Parsed {questradeSyncResult.counts.parsed}, inserted {questradeSyncResult.counts.inserted},
+            deduped {questradeSyncResult.counts.deduped}, rejected {questradeSyncResult.counts.rejected}
           </p>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Type</th>
-              <th>Qty</th>
-              <th>Avg Cost</th>
-              <th>Price</th>
-              <th>Market Value</th>
-              <th>Unrealized P&L</th>
-            </tr>
-          </thead>
-          <tbody>
-            {portfolio?.holdings.length ? (
-              portfolio.holdings.map((position) => (
-                <tr key={position.assetId}>
-                  <td>{position.symbol}</td>
-                  <td>{position.assetType}</td>
-                  <td>{formatQuantity(position.quantity)}</td>
-                  <td>{formatCurrency(position.avgCost)}</td>
-                  <td>{position.marketPrice === null ? "--" : formatCurrency(position.marketPrice)}</td>
-                  <td>{formatCurrency(position.marketValue)}</td>
-                  <td className={position.unrealizedPnl >= 0 ? "gain" : "loss"}>
-                    {formatCurrency(position.unrealizedPnl)}
-                    {position.quoteStale ? <span className="stale-tag">stale</span> : null}
-                  </td>
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan={7} className="empty-row">
-                  No holdings yet. Add your first trade.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Trade History</h2>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Symbol</th>
-              <th>Type</th>
-              <th>Side</th>
-              <th>Qty</th>
-              <th>Price</th>
-              <th>Fee</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {portfolio?.trades.length ? (
-              portfolio.trades.map((trade) => (
-                <tr key={trade.id}>
-                  <td>{new Date(trade.tradedAt).toLocaleString("en-CA")}</td>
-                  <td>{trade.symbol}</td>
-                  <td>{trade.assetType}</td>
-                  <td className={trade.side === "buy" ? "buy" : "sell"}>{trade.side}</td>
-                  <td>{formatQuantity(trade.quantity)}</td>
-                  <td>{formatCurrency(trade.price)}</td>
-                  <td>{formatCurrency(trade.fee)}</td>
-                  <td>
-                    <div className="table-actions">
-                      <button className="link-button" onClick={() => openEditTradeModal(trade)}>
-                        Edit
-                      </button>
-                      <button
-                        className="link-button danger"
-                        onClick={() => void handleDeleteTrade(trade)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan={8} className="empty-row">
-                  No trades recorded.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
-
-      {showTradeModal ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <form className="modal" onSubmit={handleTradeSubmit}>
-            <h2>{editingTrade ? "Edit Trade" : "Add Trade"}</h2>
-
-            {tradeFormError ? <p className="form-error">{tradeFormError}</p> : null}
-
-            <label>
-              Symbol
-              <input
-                required
-                maxLength={15}
-                value={tradeFormState.symbol}
-                disabled={Boolean(editingTrade)}
-                onChange={(event) =>
-                  setTradeFormState((prev) => ({ ...prev, symbol: event.target.value.toUpperCase() }))
-                }
-              />
-            </label>
-
-            <label>
-              Asset Type
-              <select
-                value={tradeFormState.assetType}
-                disabled={Boolean(editingTrade)}
-                onChange={(event) =>
-                  setTradeFormState((prev) => ({
-                    ...prev,
-                    assetType: event.target.value as AssetType,
-                  }))
-                }
-              >
-                <option value="equity">Stock / ETF</option>
-                <option value="crypto">Crypto</option>
-              </select>
-            </label>
-
-            <label>
-              Side
-              <select
-                value={tradeFormState.side}
-                onChange={(event) =>
-                  setTradeFormState((prev) => ({ ...prev, side: event.target.value as TradeSide }))
-                }
-              >
-                <option value="buy">Buy</option>
-                <option value="sell">Sell</option>
-              </select>
-            </label>
-
-            <label>
-              Quantity
-              <input
-                required
-                inputMode="decimal"
-                type="number"
-                min="0.00000001"
-                step="0.00000001"
-                value={tradeFormState.quantity}
-                onChange={(event) =>
-                  setTradeFormState((prev) => ({ ...prev, quantity: event.target.value }))
-                }
-              />
-            </label>
-
-            <label>
-              Price
-              <input
-                required
-                inputMode="decimal"
-                type="number"
-                min="0.00000001"
-                step="0.00000001"
-                value={tradeFormState.price}
-                onChange={(event) =>
-                  setTradeFormState((prev) => ({ ...prev, price: event.target.value }))
-                }
-              />
-            </label>
-
-            <label>
-              Fee
-              <input
-                inputMode="decimal"
-                type="number"
-                min="0"
-                step="0.01"
-                value={tradeFormState.fee}
-                onChange={(event) =>
-                  setTradeFormState((prev) => ({ ...prev, fee: event.target.value }))
-                }
-              />
-            </label>
-
-            <label>
-              Trade Date
-              <input
-                required
-                type="datetime-local"
-                value={tradeFormState.tradedAt}
-                onChange={(event) =>
-                  setTradeFormState((prev) => ({ ...prev, tradedAt: event.target.value }))
-                }
-              />
-            </label>
-
-            <label>
-              Notes
-              <textarea
-                rows={3}
-                maxLength={500}
-                value={tradeFormState.notes}
-                onChange={(event) =>
-                  setTradeFormState((prev) => ({ ...prev, notes: event.target.value }))
-                }
-              />
-            </label>
-
-            <div className="modal-actions">
-              <button type="button" className="button secondary" onClick={closeTradeModal}>
-                Cancel
-              </button>
-              <button type="submit" className="button" disabled={submittingTrade}>
-                {submittingTrade ? "Saving..." : "Save Trade"}
-              </button>
+          {questradeSyncResult.accounts.map((account) => (
+            <p className="empty-copy" key={account.accountNumber}>
+              {account.accountNumber}: {account.status} ({account.counts.inserted} inserted,{" "}
+              {account.counts.deduped} deduped, {account.counts.rejected} rejected)
+            </p>
+          ))}
+          {questradeSyncResult.warnings.length ? (
+            <div className="warning-banner">
+              {questradeSyncResult.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
             </div>
-          </form>
-        </div>
+          ) : null}
+        </section>
       ) : null}
 
-      {showNetWorthModal ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <form className="modal" onSubmit={handleNetWorthSubmit}>
-            <h2>{editingNetWorthEntry ? "Edit Entry" : "Add Net Worth Entry"}</h2>
+      {loading ? <p className="status">Loading portfolio...</p> : null}
 
-            {netWorthFormError ? <p className="form-error">{netWorthFormError}</p> : null}
-
-            <label>
-              Entry Type
-              <select
-                value={netWorthFormState.entryType}
-                disabled={Boolean(editingNetWorthEntry)}
-                onChange={(event) => {
-                  const entryType = event.target.value as NetWorthEntryType;
-                  const categories = categoriesForEntryType(entryType);
-                  setNetWorthFormState((prev) => ({
-                    ...prev,
-                    entryType,
-                    category: categories[0],
-                  }));
-                }}
-              >
-                <option value="asset">Asset</option>
-                <option value="debt">Debt</option>
-              </select>
-            </label>
-
-            <label>
-              Category
-              <select
-                value={netWorthFormState.category}
-                disabled={Boolean(editingNetWorthEntry)}
-                onChange={(event) =>
-                  setNetWorthFormState((prev) => ({
-                    ...prev,
-                    category: event.target.value as NetWorthCategory,
-                  }))
-                }
-              >
-                {categoriesForEntryType(netWorthFormState.entryType).map((category) => (
-                  <option key={category} value={category}>
-                    {CATEGORY_LABELS[category]}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Label
-              <input
-                required
-                maxLength={100}
-                value={netWorthFormState.label}
-                onChange={(event) =>
-                  setNetWorthFormState((prev) => ({ ...prev, label: event.target.value }))
-                }
-              />
-            </label>
-
-            <label>
-              Amount
-              <input
-                required
-                inputMode="decimal"
-                type="number"
-                min="0"
-                step="0.01"
-                value={netWorthFormState.amount}
-                onChange={(event) =>
-                  setNetWorthFormState((prev) => ({ ...prev, amount: event.target.value }))
-                }
-              />
-            </label>
-
-            <div className="modal-actions">
-              <button type="button" className="button secondary" onClick={closeNetWorthModal}>
-                Cancel
-              </button>
-              <button type="submit" className="button" disabled={submittingNetWorth}>
-                {submittingNetWorth ? "Saving..." : "Save Entry"}
-              </button>
+      {!loading && portfolio ? (
+        <>
+          {portfolio.quoteWarnings.length ? (
+            <div className="warning-banner">
+              {portfolio.quoteWarnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
             </div>
-          </form>
-        </div>
+          ) : null}
+
+          <section className="summary-grid summary-grid-4">
+            <article className="summary-card">
+              <h2>Portfolio</h2>
+              <p>{portfolio.portfolio.name}</p>
+            </article>
+            <article className="summary-card">
+              <h2>Market Value</h2>
+              <p>{formatCurrency(portfolio.summary.totalMarketValue)}</p>
+            </article>
+            <article className="summary-card">
+              <h2>Imported Cash</h2>
+              <p>{formatCurrency(portfolio.cash.balance)}</p>
+            </article>
+            <article className="summary-card">
+              <h2>Unrealized P&L</h2>
+              <p>{formatCurrency(portfolio.summary.totalUnrealizedPnl)}</p>
+            </article>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Holdings</h2>
+              <p>
+                Last quote update: {quoteTimestamp ? new Date(quoteTimestamp).toLocaleString("en-CA") : "n/a"}
+              </p>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Type</th>
+                  <th>Qty</th>
+                  <th>Avg Cost</th>
+                  <th>Price</th>
+                  <th>Market Value</th>
+                  <th>Unrealized P&L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {portfolio.holdings.length ? (
+                  portfolio.holdings.map((position) => (
+                    <tr key={position.assetId}>
+                      <td>{position.symbol}</td>
+                      <td>{position.assetType}</td>
+                      <td>{formatQuantity(position.quantity)}</td>
+                      <td>{formatCurrency(position.avgCost)}</td>
+                      <td>{position.marketPrice === null ? "--" : formatCurrency(position.marketPrice)}</td>
+                      <td>{formatCurrency(position.marketValue)}</td>
+                      <td className={position.unrealizedPnl >= 0 ? "gain" : "loss"}>
+                        {formatCurrency(position.unrealizedPnl)}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="empty-row">
+                      No holdings yet. Upload a portfolio CSV.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Trade History</h2>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Symbol</th>
+                  <th>Type</th>
+                  <th>Side</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Fee</th>
+                </tr>
+              </thead>
+              <tbody>
+                {portfolio.trades.length ? (
+                  portfolio.trades.map((trade) => (
+                    <tr key={trade.id}>
+                      <td>{new Date(trade.tradedAt).toLocaleString("en-CA")}</td>
+                      <td>{trade.symbol}</td>
+                      <td>{trade.assetType}</td>
+                      <td className={trade.side === "buy" ? "buy" : "sell"}>{trade.side}</td>
+                      <td>{formatQuantity(trade.quantity)}</td>
+                      <td>{formatCurrency(trade.price)}</td>
+                      <td>{formatCurrency(trade.fee)}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="empty-row">
+                      No trades recorded.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </section>
+        </>
       ) : null}
     </main>
   );

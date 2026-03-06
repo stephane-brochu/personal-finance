@@ -9,7 +9,7 @@ export function parseCsv(text: string) {
     return { headers: [] as string[], rows: [] as string[][] };
   }
 
-  const headers = parseCsvLine(lines[0]).map((header) => header.trim());
+  const headers = parseCsvLine(lines[0]);
   const rows = lines.slice(1).map(parseCsvLine);
 
   return { headers, rows };
@@ -20,23 +20,21 @@ function parseCsvLine(line: string) {
   let current = "";
   let inQuotes = false;
 
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
 
     if (char === '"') {
-      const next = line[i + 1];
-      if (inQuotes && next === '"') {
+      if (inQuotes && line[index + 1] === '"') {
         current += '"';
-        i += 1;
-        continue;
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
       }
-
-      inQuotes = !inQuotes;
       continue;
     }
 
     if (char === "," && !inQuotes) {
-      out.push(current);
+      out.push(current.trim());
       current = "";
       continue;
     }
@@ -44,6 +42,6 @@ function parseCsvLine(line: string) {
     current += char;
   }
 
-  out.push(current);
-  return out.map((value) => value.trim());
+  out.push(current.trim());
+  return out;
 }

@@ -149,41 +149,19 @@ body {
   overflow-x: auto;
 }
 
-.statement-import-form {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.65rem;
+.yahoo-import-form {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
-.statement-import-form label {
-  display: grid;
-  gap: 0.3rem;
-  font-size: 0.9rem;
-}
-
-.statement-import-form input,
-.statement-import-form select {
-  width: 100%;
+.yahoo-import-form input,
+.yahoo-import-form select {
   border: 1px solid var(--border);
   border-radius: 0.55rem;
-  padding: 0.45rem 0.55rem;
+  padding: 0.5rem 0.6rem;
   font: inherit;
-}
-
-.statement-import-actions {
-  align-self: end;
-}
-
-.import-result {
-  margin-top: 0.6rem;
-  border: 1px solid var(--border);
-  background: #f7fbff;
-  border-radius: 0.65rem;
-  padding: 0.6rem;
-}
-
-.import-result p {
-  margin: 0.2rem 0;
 }
 
 .panel-header {
@@ -419,10 +397,6 @@ th {
 
   .category-grid,
   .category-grid.two-column {
-    grid-template-columns: 1fr;
-  }
-
-  .statement-import-form {
     grid-template-columns: 1fr;
   }
 }

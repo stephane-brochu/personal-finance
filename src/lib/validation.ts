@@ -7,6 +7,7 @@ const isoDateWithTime = z
   .refine((value) => !Number.isNaN(Date.parse(value)), "Invalid date");
 
 export const tradePayloadSchema = z.object({
+  portfolioId: z.number().int().positive("Portfolio is required"),
   symbol: z.string().min(1),
   assetType: z.enum(["equity", "crypto"]),
   side: z.enum(["buy", "sell"]),
@@ -19,6 +20,12 @@ export const tradePayloadSchema = z.object({
 });
 
 export type TradePayload = z.infer<typeof tradePayloadSchema>;
+
+export const portfolioCreateSchema = z.object({
+  name: z.string().trim().min(1, "Name is required").max(100),
+});
+
+export type PortfolioCreatePayload = z.infer<typeof portfolioCreateSchema>;
 
 const normalizedLabel = z
   .string()

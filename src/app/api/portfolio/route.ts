@@ -6,9 +6,14 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const refreshQuotes = searchParams.get("refresh") !== "0";
+  const portfolioId = Number(searchParams.get("portfolioId"));
+
+  if (!Number.isInteger(portfolioId) || portfolioId <= 0) {
+    return NextResponse.json({ error: "portfolioId is required" }, { status: 400 });
+  }
 
   try {
-    const snapshot = await getPortfolioSnapshot(refreshQuotes);
+    const snapshot = await getPortfolioSnapshot(portfolioId, refreshQuotes);
     return NextResponse.json(snapshot);
   } catch (error) {
     return NextResponse.json(

@@ -1,0 +1,3 @@
+date,type,symbol,asset_type,side,quantity,price,fee,transaction_type,amount,currency,description,reference
+2026-01-02,TRADE,SHOP,equity,BUY,1,100,0,,,CAD,Buy,REF-X
+2026-01-03,CASH,,,,,,,deposit,200,CAD,Funding,REF-Y

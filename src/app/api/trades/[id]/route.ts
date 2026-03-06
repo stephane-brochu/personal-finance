@@ -13,6 +13,16 @@ function parseTradeId(param: string) {
   return id;
 }
 
+function parsePortfolioId(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const portfolioId = Number(searchParams.get("portfolioId"));
+  if (!Number.isInteger(portfolioId) || portfolioId <= 0) {
+    throw new Error("portfolioId is required");
+  }
+
+  return portfolioId;
+}
+
 export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> },
@@ -20,10 +30,11 @@ export async function PATCH(
   try {
     const { id: idParam } = await context.params;
     const tradeId = parseTradeId(idParam);
+    const portfolioId = parsePortfolioId(request);
     const raw = await request.json();
     const payload = tradePayloadSchema.parse(raw);
 
-    const existing = getTradeById(tradeId);
+    const existing = getTradeById(tradeId, portfolioId);
     if (!existing) {
       return NextResponse.json({ error: "Trade not found" }, { status: 404 });
     }
@@ -38,7 +49,7 @@ export async function PATCH(
       );
     }
 
-    const updated = updateTrade(tradeId, {
+    const updated = updateTrade(tradeId, portfolioId, {
       side: payload.side,
       quantity: payload.quantity,
       price: payload.price,
@@ -58,14 +69,15 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id: idParam } = await context.params;
     const tradeId = parseTradeId(idParam);
+    const portfolioId = parsePortfolioId(request);
 
-    const deleted = deleteTrade(tradeId);
+    const deleted = deleteTrade(tradeId, portfolioId);
 
     if (!deleted) {
       return NextResponse.json({ error: "Trade not found" }, { status: 404 });

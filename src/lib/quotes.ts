@@ -1,5 +1,6 @@
 import type { Asset, Quote } from "@/lib/types";
 import { getQuoteCacheByAssetIds, upsertQuoteCache } from "@/lib/repository";
+import { fetchQuestradeQuote } from "@/lib/questrade";
 
 type FreshQuote = {
   price: number;
@@ -18,46 +19,18 @@ const COINGECKO_SYMBOL_TO_ID: Record<string, string> = {
 
 export async function fetchQuoteForAsset(asset: Asset): Promise<FreshQuote> {
   if (asset.assetType === "equity") {
-    return fetchYahooQuote(asset.symbol);
+    return fetchQuestradeEquityQuote(asset.symbol);
   }
 
   return fetchCoinGeckoQuote(asset.symbol);
 }
 
-async function fetchYahooQuote(symbol: string): Promise<FreshQuote> {
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
-  const response = await fetch(url, {
-    cache: "no-store",
-    headers: {
-      Accept: "application/json",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Yahoo quote failed (${response.status})`);
-  }
-
-  const payload = (await response.json()) as {
-    quoteResponse?: {
-      result?: Array<{ regularMarketPrice?: number; regularMarketTime?: number }>;
-    };
-  };
-
-  const quote = payload.quoteResponse?.result?.[0];
-  const price = quote?.regularMarketPrice;
-
-  if (typeof price !== "number") {
-    throw new Error(`Yahoo quote missing price for ${symbol}`);
-  }
-
-  const quotedAt = quote?.regularMarketTime
-    ? new Date(quote.regularMarketTime * 1000).toISOString()
-    : new Date().toISOString();
-
+async function fetchQuestradeEquityQuote(symbol: string): Promise<FreshQuote> {
+  const quote = await fetchQuestradeQuote(symbol);
   return {
-    price,
-    quotedAt,
-    source: "yahoo",
+    price: quote.price,
+    quotedAt: quote.quotedAt,
+    source: "questrade",
   };
 }
 

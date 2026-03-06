@@ -1,4 +1,5 @@
 import { fetchQuoteForAsset, getQuotesForAssets } from "@/lib/quotes";
+import { resetQuestradeRuntimeForTests } from "@/lib/questrade";
 
 vi.mock("@/lib/repository", () => ({
   getQuoteCacheByAssetIds: vi.fn(() =>
@@ -19,20 +20,44 @@ vi.mock("@/lib/repository", () => ({
 }));
 
 describe("fetchQuoteForAsset", () => {
+  beforeEach(() => {
+    process.env.QUESTRADE_REFRESH_TOKEN = "test-refresh-token";
+    process.env.QUESTRADE_IS_PRACTICE = "false";
+    resetQuestradeRuntimeForTests();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("uses Yahoo endpoint for equities", async () => {
-    const fetchMock = vi.spyOn(global, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          quoteResponse: {
-            result: [{ regularMarketPrice: 101, regularMarketTime: 1735689600 }],
-          },
-        }),
-      ),
-    );
+  it("uses Questrade endpoint for equities", async () => {
+    const fetchMock = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "access-token",
+            refresh_token: "next-refresh-token",
+            expires_in: 1800,
+            api_server: "https://api01.iq.questrade.com/",
+            token_type: "Bearer",
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            symbols: [{ symbol: "AAPL", symbolId: 101 }],
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            quotes: [{ lastTradePrice: 101, lastTradeTime: "2026-01-01T15:30:00.000000-05:00" }],
+          }),
+        ),
+      );
 
     const quote = await fetchQuoteForAsset({
       id: 10,
@@ -43,9 +68,9 @@ describe("fetchQuoteForAsset", () => {
       updatedAt: "",
     });
 
-    expect(fetchMock.mock.calls[0][0]).toContain("finance.yahoo.com");
+    expect(String(fetchMock.mock.calls[0][0])).toContain("login.questrade.com/oauth2/token");
     expect(quote.price).toBe(101);
-    expect(quote.source).toBe("yahoo");
+    expect(quote.source).toBe("questrade");
   });
 
   it("uses CoinGecko endpoint for crypto", async () => {
@@ -75,6 +100,12 @@ describe("fetchQuoteForAsset", () => {
 });
 
 describe("getQuotesForAssets", () => {
+  beforeEach(() => {
+    process.env.QUESTRADE_REFRESH_TOKEN = "test-refresh-token";
+    process.env.QUESTRADE_IS_PRACTICE = "false";
+    resetQuestradeRuntimeForTests();
+  });
+
   it("returns stale cached quote and warning when refresh fails", async () => {
     vi.spyOn(global, "fetch").mockRejectedValue(new Error("network down"));
 

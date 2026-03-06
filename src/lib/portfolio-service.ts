@@ -1,15 +1,36 @@
-import { buildNetWorthSnapshot } from "@/lib/net-worth";
 import { buildPosition, calculatePositionFromTrades } from "@/lib/portfolio";
-import { getAssets, listNetWorthEntries, listTrades } from "@/lib/repository";
+import {
+  getAssets,
+  getPortfolioById,
+  listCashTransactions,
+  listTrades,
+} from "@/lib/repository";
 import { getQuotesForAssets } from "@/lib/quotes";
 import type { PortfolioResponse } from "@/lib/types";
 
-export async function getPortfolioSnapshot(refreshQuotes: boolean): Promise<PortfolioResponse> {
-  const assets = getAssets();
-  const trades = listTrades();
+function shouldUseTradeForHoldings(source: string) {
+  return source !== "questrade_activity";
+}
+
+function shouldUseCashForBalance(source: string) {
+  return source !== "questrade_activity";
+}
+
+export async function getPortfolioSnapshot(
+  portfolioId: number,
+  refreshQuotes: boolean,
+): Promise<PortfolioResponse> {
+  const portfolio = getPortfolioById(portfolioId);
+  if (!portfolio) {
+    throw new Error("Portfolio not found");
+  }
+
+  const assets = getAssets(portfolioId);
+  const trades = listTrades(portfolioId);
+  const valuationTrades = trades.filter((trade) => shouldUseTradeForHoldings(trade.source));
   const tradesByAsset = new Map<number, typeof trades>();
 
-  for (const trade of trades) {
+  for (const trade of valuationTrades) {
     const current = tradesByAsset.get(trade.assetId) ?? [];
     current.push(trade);
     tradesByAsset.set(trade.assetId, current);
@@ -61,17 +82,27 @@ export async function getPortfolioSnapshot(refreshQuotes: boolean): Promise<Port
     updatedAt: new Date().toISOString(),
   };
 
-  const netWorth = buildNetWorthSnapshot({
-    entries: listNetWorthEntries(),
-    portfolioTotal: summary.totalMarketValue,
-    updatedAt: summary.updatedAt,
-  });
+  const cashTransactions = listCashTransactions(portfolioId);
+  const balanceTransactions = cashTransactions.filter((item) => shouldUseCashForBalance(item.source));
+  const cash = {
+    balance: balanceTransactions.reduce((sum, item) => sum + item.amount, 0),
+    totalDeposits: balanceTransactions
+      .filter((item) => item.transactionType === "deposit")
+      .reduce((sum, item) => sum + item.amount, 0),
+    totalWithdrawals: Math.abs(
+      balanceTransactions
+        .filter((item) => item.transactionType === "withdrawal")
+        .reduce((sum, item) => sum + item.amount, 0),
+    ),
+    transactionCount: balanceTransactions.length,
+  };
 
   return {
+    portfolio,
     summary,
+    cash,
     holdings,
     trades,
     quoteWarnings: warnings,
-    netWorth,
   };
 }

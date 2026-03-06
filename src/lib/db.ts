@@ -29,9 +29,18 @@ function runMigrations(db: Database.Database) {
       UNIQUE(symbol, asset_type)
     );
 
+    CREATE TABLE IF NOT EXISTS portfolios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS trades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id INTEGER NOT NULL DEFAULT 1,
       asset_id INTEGER NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
       side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
       quantity REAL NOT NULL,
       price REAL NOT NULL,
@@ -40,6 +49,8 @@ function runMigrations(db: Database.Database) {
       notes TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      import_fingerprint TEXT,
+      FOREIGN KEY(portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE,
       FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE RESTRICT
     );
 
@@ -63,104 +74,88 @@ function runMigrations(db: Database.Database) {
       UNIQUE(entry_type, category, label)
     );
 
-    CREATE TABLE IF NOT EXISTS accounts (
+    CREATE TABLE IF NOT EXISTS portfolio_cash_transactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      institution TEXT NOT NULL,
-      account_mask TEXT NOT NULL,
-      account_hash TEXT NOT NULL,
-      account_type TEXT NOT NULL CHECK (account_type IN ('brokerage', 'bank')),
-      currency TEXT NOT NULL DEFAULT 'CAD',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(institution, account_hash, account_type, currency)
-    );
-
-    CREATE TABLE IF NOT EXISTS statements (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL,
-      file_name TEXT NOT NULL,
-      file_path TEXT NOT NULL,
-      format TEXT NOT NULL CHECK (format IN ('pdf', 'csv')),
-      sha256 TEXT NOT NULL,
-      period_start TEXT,
-      period_end TEXT,
-      parser_id TEXT NOT NULL,
-      parser_version TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('processing', 'completed', 'failed')),
-      error_summary TEXT,
-      warnings_json TEXT NOT NULL DEFAULT '[]',
-      parsed_count INTEGER NOT NULL DEFAULT 0,
-      inserted_count INTEGER NOT NULL DEFAULT 0,
-      deduped_count INTEGER NOT NULL DEFAULT 0,
-      rejected_count INTEGER NOT NULL DEFAULT 0,
-      reprocess_of_statement_id INTEGER,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY(reprocess_of_statement_id) REFERENCES statements(id) ON DELETE SET NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS statement_rows (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      statement_id INTEGER NOT NULL,
-      account_id INTEGER NOT NULL,
-      row_index INTEGER NOT NULL,
-      record_type TEXT NOT NULL CHECK (record_type IN ('trade', 'cash_movement')),
-      fingerprint TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('inserted', 'deduped', 'rejected')),
-      source_ref TEXT,
-      symbol TEXT,
-      side TEXT CHECK (side IN ('buy', 'sell')),
-      quantity REAL,
-      price REAL,
-      fee REAL,
-      amount REAL,
-      currency TEXT NOT NULL DEFAULT 'CAD',
-      occurred_at TEXT NOT NULL,
-      description TEXT,
-      reference TEXT,
-      raw_data_json TEXT,
-      error_message TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY(statement_id) REFERENCES statements(id) ON DELETE CASCADE,
-      FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      UNIQUE(statement_id, row_index)
-    );
-
-    CREATE TABLE IF NOT EXISTS cash_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL,
-      statement_row_id INTEGER NOT NULL,
-      transaction_type TEXT NOT NULL CHECK (transaction_type IN ('deposit', 'withdrawal', 'dividend', 'interest', 'fee', 'transfer')),
+      portfolio_id INTEGER NOT NULL DEFAULT 1,
+      transaction_type TEXT NOT NULL CHECK (transaction_type IN ('deposit', 'withdrawal')),
       amount REAL NOT NULL,
-      currency TEXT NOT NULL DEFAULT 'CAD',
       occurred_at TEXT NOT NULL,
-      description TEXT,
-      reference TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      fingerprint TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY(statement_row_id) REFERENCES statement_rows(id) ON DELETE CASCADE
+      FOREIGN KEY(portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS import_runs (
+    CREATE TABLE IF NOT EXISTS broker_accounts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      statement_id INTEGER NOT NULL,
-      run_type TEXT NOT NULL CHECK (run_type IN ('initial', 'reprocess')),
-      status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
-      error_summary TEXT,
+      provider TEXT NOT NULL CHECK (provider IN ('questrade')),
+      broker_account_number TEXT NOT NULL,
+      portfolio_id INTEGER NOT NULL,
+      last_synced_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'never' CHECK (sync_status IN ('never', 'ok', 'partial', 'failed')),
+      last_error TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY(statement_id) REFERENCES statements(id) ON DELETE CASCADE
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY(portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE,
+      UNIQUE(provider, broker_account_number)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_trades_asset_time ON trades(asset_id, traded_at, id);
     CREATE INDEX IF NOT EXISTS idx_net_worth_entry_type_category ON net_worth_entries(entry_type, category);
-    CREATE INDEX IF NOT EXISTS idx_accounts_lookup ON accounts(institution, account_hash, account_type, currency);
-    CREATE INDEX IF NOT EXISTS idx_statements_account_created ON statements(account_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_statement_rows_statement ON statement_rows(statement_id, row_index);
-    CREATE INDEX IF NOT EXISTS idx_statement_rows_fingerprint ON statement_rows(account_id, fingerprint);
-    CREATE INDEX IF NOT EXISTS idx_cash_transactions_account_time ON cash_transactions(account_id, occurred_at, id);
   `);
+
+  db.exec("INSERT OR IGNORE INTO portfolios (id, name) VALUES (1, 'Default')");
+
+  const tradeColumns = db
+    .prepare("PRAGMA table_info(trades)")
+    .all() as Array<{ name: string }>;
+  const hasImportFingerprint = tradeColumns.some(
+    (column) => column.name === "import_fingerprint",
+  );
+
+  if (!hasImportFingerprint) {
+    db.exec("ALTER TABLE trades ADD COLUMN import_fingerprint TEXT");
+  }
+
+  const hasTradePortfolioId = tradeColumns.some(
+    (column) => column.name === "portfolio_id",
+  );
+  if (!hasTradePortfolioId) {
+    db.exec("ALTER TABLE trades ADD COLUMN portfolio_id INTEGER NOT NULL DEFAULT 1");
+  }
+
+  const hasTradeSource = tradeColumns.some((column) => column.name === "source");
+  if (!hasTradeSource) {
+    db.exec("ALTER TABLE trades ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
+  }
+
+  const cashColumns = db
+    .prepare("PRAGMA table_info(portfolio_cash_transactions)")
+    .all() as Array<{ name: string }>;
+  const hasCashPortfolioId = cashColumns.some(
+    (column) => column.name === "portfolio_id",
+  );
+  if (!hasCashPortfolioId) {
+    db.exec(
+      "ALTER TABLE portfolio_cash_transactions ADD COLUMN portfolio_id INTEGER NOT NULL DEFAULT 1",
+    );
+  }
+
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_portfolio_import_fingerprint ON trades(portfolio_id, import_fingerprint) WHERE import_fingerprint IS NOT NULL",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_trades_portfolio_asset_time ON trades(portfolio_id, asset_id, traded_at, id)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_cash_transactions_portfolio_time ON portfolio_cash_transactions(portfolio_id, occurred_at, id)",
+  );
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_portfolio_fingerprint ON portfolio_cash_transactions(portfolio_id, fingerprint)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_broker_accounts_provider_portfolio ON broker_accounts(provider, portfolio_id)",
+  );
 }
 
 export function getDb() {
