@@ -1,14 +1,21 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PortfolioClient } from "@/components/portfolio-client";
 
-const baseSnapshot = {
-  portfolio: { id: 1, name: "Main", createdAt: "", updatedAt: "" },
+const makeSnapshot = (id: number, name: string, accountNumber: string, quoteWarnings: string[] = []) => ({
+  portfolio: {
+    id,
+    name,
+    brokerProvider: "questrade",
+    brokerAccountNumber: accountNumber,
+    createdAt: "",
+    updatedAt: "",
+  },
   summary: {
     baseCurrency: "CAD",
-    totalMarketValue: 100,
-    totalUnrealizedPnl: 10,
+    totalMarketValue: 650,
+    totalUnrealizedPnl: 150,
     totalRealizedPnl: 2,
-    updatedAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-03-06T16:00:00.000Z",
   },
   cash: {
     balance: 50,
@@ -18,7 +25,7 @@ const baseSnapshot = {
   },
   holdings: [
     {
-      assetId: 1,
+      assetId: id,
       symbol: "VDY.TO",
       assetType: "equity",
       quantity: 10,
@@ -28,115 +35,112 @@ const baseSnapshot = {
       marketValue: 650,
       unrealizedPnl: 150,
       realizedPnl: 0,
-      quoteTimestamp: "2026-01-01T00:00:00.000Z",
+      quoteTimestamp: "2026-03-06T16:00:00.000Z",
       quoteStale: false,
     },
   ],
-  trades: [
-    {
-      id: 1,
-      portfolioId: 1,
-      assetId: 1,
-      symbol: "VDY.TO",
-      assetType: "equity",
-      side: "buy",
-      quantity: 10,
-      price: 50,
-      fee: 0,
-      tradedAt: "2026-01-01T00:00:00.000Z",
-      notes: null,
-      createdAt: "",
-      updatedAt: "",
-    },
-  ],
-  quoteWarnings: [],
-};
+  trades: [],
+  quoteWarnings,
+});
 
 describe("PortfolioClient", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("loads portfolios and selected snapshot", async () => {
-    vi.spyOn(global, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify({ portfolios: [{ id: 1, name: "Main" }] })))
-      .mockResolvedValueOnce(new Response(JSON.stringify(baseSnapshot)));
+  it("loads and renders all questrade account portfolios", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          portfolios: [
+            makeSnapshot(1, "Questrade 53308664", "53308664"),
+            makeSnapshot(2, "Questrade 53646523", "53646523"),
+          ],
+        }),
+      ),
+    );
 
     render(<PortfolioClient />);
 
-    await screen.findByText("Portfolio Dashboard");
-    const symbols = await screen.findAllByText("VDY.TO");
-    expect(symbols.length).toBeGreaterThan(0);
+    await screen.findByText("Account Portfolios");
+    expect(await screen.findByText("Questrade 53308664")).toBeInTheDocument();
+    expect(await screen.findByText("Questrade 53646523")).toBeInTheDocument();
+    expect(screen.getByText("2 account portfolios")).toBeInTheDocument();
   });
 
-  it("creates a portfolio", async () => {
-    const fetchMock = vi
-      .spyOn(global, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify({ portfolios: [{ id: 1, name: "Main" }] })))
-      .mockResolvedValueOnce(new Response(JSON.stringify(baseSnapshot)))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 2, name: "RRSP", createdAt: "", updatedAt: "" }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ portfolios: [{ id: 1, name: "Main" }, { id: 2, name: "RRSP" }] })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ...baseSnapshot, portfolio: { id: 2, name: "RRSP", createdAt: "", updatedAt: "" } })));
+  it("shows quote warnings for non-today or stale quotes", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          portfolios: [
+            makeSnapshot(1, "Questrade 53308664", "53308664", [
+              "Using non-today quote for VDY.TO",
+            ]),
+          ],
+        }),
+      ),
+    );
 
     render(<PortfolioClient />);
 
-    await screen.findAllByText("VDY.TO");
-    fireEvent.change(screen.getByPlaceholderText(/new portfolio name/i), {
-      target: { value: "RRSP" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/portfolios",
-        expect.objectContaining({ method: "POST" }),
-      );
-    });
+    expect(await screen.findByText(/Using non-today quote/i)).toBeInTheDocument();
   });
 
-  it("uploads yahoo csv for selected portfolio", async () => {
+  it("syncs questrade accounts and refreshes the account portfolio list", async () => {
     const fetchMock = vi
       .spyOn(global, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify({ portfolios: [{ id: 1, name: "Main" }] })))
-      .mockResolvedValueOnce(new Response(JSON.stringify(baseSnapshot)))
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            counts: { parsed: 2, inserted: 2, deduped: 0, rejected: 0 },
-            warnings: [],
-            errors: [],
+            portfolios: [makeSnapshot(1, "Questrade 53308664", "53308664")],
           }),
         ),
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify(baseSnapshot)));
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            provider: "questrade",
+            counts: { parsed: 3, inserted: 3, deduped: 0, rejected: 0 },
+            accounts: [
+              {
+                accountNumber: "53308664",
+                portfolioId: 1,
+                portfolioName: "Questrade 53308664",
+                status: "ok",
+                counts: { parsed: 3, inserted: 3, deduped: 0, rejected: 0 },
+                warnings: [],
+                errors: [],
+              },
+            ],
+            warnings: [],
+            errors: [],
+            syncedAt: "2026-03-06T23:00:00.000Z",
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            portfolios: [
+              makeSnapshot(1, "Questrade 53308664", "53308664"),
+              makeSnapshot(2, "Questrade 53646523", "53646523"),
+            ],
+          }),
+        ),
+      );
 
     render(<PortfolioClient />);
 
-    await screen.findAllByText("VDY.TO");
-
-    const fileInput = document.querySelector("input[name='yahooCsv']") as HTMLInputElement | null;
-    if (!fileInput) {
-      throw new Error("File input not found");
-    }
-    const file = new File(["Symbol,Trade Date,Purchase Price,Quantity,Commission"], "portfolio.csv", {
-      type: "text/csv",
-    });
-    Object.defineProperty(fileInput, "files", {
-      value: [file],
-      writable: false,
-    });
-
-    const uploadForm = fileInput.closest("form");
-    if (!uploadForm) {
-      throw new Error("Upload form not found");
-    }
-    fireEvent.submit(uploadForm);
+    await screen.findByText("Questrade 53308664");
+    fireEvent.click(screen.getByRole("button", { name: /sync questrade accounts/i }));
 
     await waitFor(() => {
-      const hasImportCall = fetchMock.mock.calls.some(
-        (call) => call[0] === "/api/portfolio/import-yahoo",
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/brokers/questrade/sync",
+        expect.objectContaining({ method: "POST" }),
       );
-      expect(hasImportCall).toBe(true);
     });
+
+    expect(await screen.findByText("Questrade 53646523")).toBeInTheDocument();
   });
 });

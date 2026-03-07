@@ -97,6 +97,8 @@ function mapPortfolio(row: PortfolioRow): Portfolio {
   return {
     id: row.id,
     name: row.name,
+    brokerProvider: null,
+    brokerAccountNumber: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -179,6 +181,38 @@ export function listPortfolios() {
     .all() as PortfolioRow[];
 
   return rows.map(mapPortfolio);
+}
+
+export function listPortfoliosByBrokerProvider(provider: BrokerProvider) {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `
+      SELECT
+        p.id,
+        p.name,
+        p.created_at,
+        p.updated_at,
+        b.provider AS broker_provider,
+        b.broker_account_number
+      FROM portfolios p
+      JOIN broker_accounts b ON b.portfolio_id = p.id
+      WHERE b.provider = ?
+      ORDER BY b.broker_account_number ASC, p.name ASC, p.id ASC
+      `,
+    )
+    .all(provider) as Array<
+    PortfolioRow & { broker_provider: BrokerProvider; broker_account_number: string }
+  >;
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    brokerProvider: row.broker_provider,
+    brokerAccountNumber: row.broker_account_number,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
 }
 
 export function getPortfolioById(portfolioId: number) {

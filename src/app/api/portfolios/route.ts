@@ -1,12 +1,22 @@
 import { NextResponse } from "next/server";
-import { createPortfolio, listPortfolios } from "@/lib/repository";
+import {
+  createPortfolio,
+  listPortfolios,
+  listPortfoliosByBrokerProvider,
+} from "@/lib/repository";
 import { portfolioCreateSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return NextResponse.json({ portfolios: listPortfolios() });
+    const { searchParams } = new URL(request.url);
+    const provider = searchParams.get("provider");
+    const portfolios =
+      provider === "questrade"
+        ? listPortfoliosByBrokerProvider("questrade")
+        : listPortfolios();
+    return NextResponse.json({ portfolios });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to load portfolios" },

@@ -2,6 +2,7 @@ import { buildPosition, calculatePositionFromTrades } from "@/lib/portfolio";
 import {
   getAssets,
   getPortfolioById,
+  listPortfoliosByBrokerProvider,
   listCashTransactions,
   listTrades,
 } from "@/lib/repository";
@@ -14,6 +15,33 @@ function shouldUseTradeForHoldings(source: string) {
 
 function shouldUseCashForBalance(source: string) {
   return source !== "questrade_activity";
+}
+
+function getTorontoDateKey(value: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Toronto",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(value));
+}
+
+function warnOnNonTodayQuotes(holdings: PortfolioResponse["holdings"]) {
+  const todayKey = getTorontoDateKey(new Date().toISOString());
+  const warnings: string[] = [];
+
+  for (const holding of holdings) {
+    if (!holding.quoteTimestamp) {
+      warnings.push(`No quote timestamp available for ${holding.symbol}`);
+      continue;
+    }
+
+    if (getTorontoDateKey(holding.quoteTimestamp) !== todayKey) {
+      warnings.push(`Using non-today quote for ${holding.symbol}`);
+    }
+  }
+
+  return warnings;
 }
 
 export async function getPortfolioSnapshot(
@@ -103,6 +131,22 @@ export async function getPortfolioSnapshot(
     cash,
     holdings,
     trades,
-    quoteWarnings: warnings,
+    quoteWarnings: [...warnings, ...warnOnNonTodayQuotes(holdings)],
   };
+}
+
+export async function getBrokerPortfolioSnapshots(
+  provider: "questrade",
+  refreshQuotes: boolean,
+): Promise<PortfolioResponse[]> {
+  const portfolios = listPortfoliosByBrokerProvider(provider);
+  const snapshots = await Promise.all(
+    portfolios.map((portfolio) => getPortfolioSnapshot(portfolio.id, refreshQuotes)),
+  );
+
+  return snapshots.sort((left, right) => {
+    const leftAccount = left.portfolio.brokerAccountNumber ?? left.portfolio.name;
+    const rightAccount = right.portfolio.brokerAccountNumber ?? right.portfolio.name;
+    return leftAccount.localeCompare(rightAccount);
+  });
 }

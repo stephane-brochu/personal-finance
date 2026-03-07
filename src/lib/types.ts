@@ -76,8 +76,14 @@ export type PortfolioResponse = {
 export type Portfolio = {
   id: number;
   name: string;
+  brokerProvider?: BrokerProvider | null;
+  brokerAccountNumber?: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type PortfolioAccountsResponse = {
+  portfolios: PortfolioResponse[];
 };
 
 export type BrokerProvider = "questrade";
